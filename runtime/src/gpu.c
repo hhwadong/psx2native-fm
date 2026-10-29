@@ -4054,6 +4054,20 @@ static void ws_clear_tagged_rect_reveal(int y, int h) {
  * stage art. A stale reveal tile is safer than deleting submitted content. */
 static int s_ll_in_node = 0;
 static uint32_t s_ll_node_words_remaining = 0;
+static char s_gpu_game_id[64] = {0};
+static int s_is_fma = 0;
+
+void gpu_set_game_id(const char *game_id) {
+    if (game_id) {
+        strncpy(s_gpu_game_id, game_id, sizeof(s_gpu_game_id) - 1);
+        s_gpu_game_id[sizeof(s_gpu_game_id) - 1] = '\0';
+        s_is_fma = (strstr(s_gpu_game_id, "SLPS-00953") != NULL ||
+                    strstr(s_gpu_game_id, "SLPS_009.53") != NULL);
+    } else {
+        s_gpu_game_id[0] = '\0';
+        s_is_fma = 0;
+    }
+}
 
 void gpu_ws_begin_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
@@ -4070,7 +4084,7 @@ void gpu_set_gp0_linked_list_node(uint32_t addr, uint32_t word_count) {
         s_ll_node_words_remaining = 0;
         return;
     }
-    if (gp0_state == GP0_COLLECTING) {
+    if (s_is_fma && gp0_state == GP0_COLLECTING) {
         gp0_state = GP0_IDLE;
     }
     s_ll_in_node = 1;
@@ -4081,7 +4095,7 @@ void gpu_ws_end_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
     s_ll_in_node = 0;
     s_ll_node_words_remaining = 0;
-    if (gp0_state == GP0_COLLECTING) {
+    if (s_is_fma && gp0_state == GP0_COLLECTING) {
         gp0_state = GP0_IDLE;
     }
 }
@@ -6311,7 +6325,7 @@ static void gp0_exec_textured_8x8(void) {
     uint16_t clut_x = (clut & 0x3F) * 16;
     uint16_t clut_y = (clut >> 6) & 0x1FF;
 
-    if (u0 == 0 && v0 == 184 && clut == 0x3FFC) {
+    if (s_is_fma && u0 == 0 && v0 == 184 && clut == 0x3FFC) {
         return;
     }
 
@@ -8011,7 +8025,7 @@ static void gpu_write_gp0_body(uint32_t val) {
         if (gp0_words_collected >= gp0_words_needed) {
             gp0_state = GP0_IDLE;
             gp0_execute_command();
-        } else if (in_node && s_ll_node_words_remaining == 0) {
+        } else if (s_is_fma && in_node && s_ll_node_words_remaining == 0) {
             gp0_state = GP0_IDLE;
         }
         return;
@@ -8020,7 +8034,7 @@ static void gpu_write_gp0_body(uint32_t val) {
     /* State: IDLE — this is the first word of a new command */
     uint8_t opcode = (val >> 24) & 0xFF;
 
-    if (in_node) {
+    if (s_is_fma && in_node) {
         uint32_t total_cmd_words = s_ll_node_words_remaining + 1;
         if ((opcode & 0xE0) == 0x20) {
             if (total_cmd_words == 4) {

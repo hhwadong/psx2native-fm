@@ -1,4 +1,4 @@
-﻿/* gpu.h — PS1 GPU hardware simulation (Phase 3).
+/* gpu.h — PS1 GPU hardware simulation (Phase 3).
  *
  * Implements GPUSTAT, GP0, GP1, and 1024x512 16-bit VRAM.
  * No rendering to screen — just correct hardware state transitions.
@@ -30,6 +30,7 @@ void     gpu_vblank_tick(void);        /* Toggle LCF, called at each simulated v
 /* Video standard before the first GP1(08h) (disc region: 1 = PAL). Applies
  * now and on every later gpu_init(); GP1(00h) still resets to NTSC. */
 void     gpu_set_power_on_video_mode(int pal);
+void     gpu_set_game_id(const char* game_id);
 
 /* Display presentation accessors (Phase 3). */
 const uint16_t* gpu_get_vram(void);    /* Pointer to 1024x512 16-bit VRAM */

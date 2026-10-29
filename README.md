@@ -4,6 +4,11 @@ PlayStation 1 static recompilation runtime fork tailored for Square Co., Ltd. 19
 
 Forked from RetroPortingToolkit/psxrecomp (mstan et al.).
 
+> [!IMPORTANT]
+> **Static Recompilation & Reverse-Engineering Methodology**
+> 
+> *A static recompiler serves strictly as the execution engine, while decompilers/disassemblers (Rizin/Ghidra) and custom extractor scripts provide the indispensable navigation and blueprint. Without precise binary ground-truth validation, any static recompilation effort inevitably devolves into blind trial-and-error and undetected regressions.*
+
 ---
 
 ## 1. Hardware & System Coverage Matrix
@@ -57,13 +62,13 @@ Coverage audit based on verified execution traces of FMA.EXE and runtime subsyst
 
 ## 3. Engineering Fixes & Line of Code Mapping
 
-### 3.1. Discrete DMA Linked-List Node Isolation
-- **Modified File**: `runtime/src/gpu.c` (lines 4055-4081, 7874-7880; driven by DMA linked-list callback `gpu_set_gp0_linked_list_node` in `runtime/src/dma.c:763`)
-- **Mechanism**: Implements `s_ll_in_node` and `s_ll_node_words_remaining`. Decrements remaining count per GP0 word. When `s_ll_node_words_remaining == 0`, state is forcibly clamped back to `GP0_IDLE`, preventing command accumulation across discrete Ordering Table nodes. Direct MMIO writes bypass this check (`in_node == 0`).
+### 3.1. Discrete DMA Linked-List Node Isolation & Game-ID Gating
+- **Modified File**: `runtime/src/gpu.c` (lines 4055-4081, 7874-7880; driven by DMA linked-list callback `gpu_set_gp0_linked_list_node` in `runtime/src/dma.c:763` and configured via `gpu_set_game_id`)
+- **Mechanism**: Implements `s_ll_in_node` and `s_ll_node_words_remaining`. Decrements remaining count per GP0 word. Gated strictly to `SLPS-00953` (`s_is_fma`), so titles utilizing multi-primitive compound DMA nodes (e.g. Front Mission 3) run on pure continuous PSX-SPX FIFO streams without premature state truncation.
 
 ### 3.2. Two-Way Opcode & DMA Node Length Harmonization
 - **File**: `runtime/src/gpu.c` (lines 8032-8072)
-- **Mechanism**: Authoritative arbitration using the DMA linked-list tag length:
+- **Mechanism**: Gated authoritative arbitration using the DMA linked-list tag length for `SLPS-00953`:
   - 4 words -> `0x20` (Flat Triangle)
   - 5 words -> `0x28` (Flat Quad)
   - 7 words -> `0x24` (Textured Triangle)
@@ -94,8 +99,9 @@ Coverage audit based on verified execution traces of FMA.EXE and runtime subsyst
 
 ---
 
-## 4. Execution Model
+## 4. Title Execution Models & Multi-Game Architecture
 
+### 4.1. Front Mission Alternative (`SLPS-00953`)
 ```
 Game Disc Layout:
 ├── SLPS_009.53 (40 KB)  --> Recompiled ahead-of-time (AOT) to native C
@@ -104,8 +110,29 @@ Game Disc Layout:
     ├── GBASE.OVL  (0x80065800)
     └── TITLE.OVL  (0x80065800)
 ```
+- `SLPS_009.53` operates as a stage-1 bootloader.
+- Main engine (`FMA.EXE`) is loaded from `.A` container archives using the verified sector table at `0x8003cabc`.
+- Combat subroutines run via overlay rebasing at `0x80065800`.
+- Requires FMA-specific opcode harmonization to reconcile mismatched `0x28` headers.
 
-The game disc uses `SLPS_009.53` strictly as a stage-1 bootloader. The actual game engine (`FMA.EXE`) and combat overlays are loaded into memory at runtime and executed via the Tier-2 LLE interpreter runtime.
+### 4.2. Front Mission 3 (`SLUS-01011`)
+```
+Game Disc Layout:
+├── SLUS_010.11 (872 KB, 0x80010000..0x800E4800) --> Recompiled AOT (4,334 functions, 68 C shards)
+└── \OVL\ (14 Overlays, Square 'MWo1' Magic 0x316F574D)
+    ├── Tier-1 Overlays (Base 0x8014D000):
+    │   ZTIT.BIN, ZSTUP.BIN, ZNET.BIN, SCMAP.BIN, SENT.BIN,
+    │   YAREA.BIN, YMV.BIN, YSL.BIN, IEFF.BIN, ZRES.BIN
+    └── Tier-2 Overlays (Base 0x80159000):
+        ZMAIL.BIN, ZNMAP.BIN, ZNAM.BIN, NEND.BIN
+```
+- **Polygon Builder Ground Truth (`SLUS_010.11:0x80035DEC..0x800361C0`)**:
+  - `0x80035DEC`: `POLY_FT3` (DMA tag length 7 words, Opcode `0x24`, Stride 8 words).
+  - `0x80035F04`: `POLY_FT4` (DMA tag length 9 words, Opcode `0x2C`, Stride 10 words).
+  - `0x80036170`: `POLY_GT4` (DMA tag length 12 words, Opcode `0x3C`, Stride 13 words).
+- **Compound Ordering Table Architecture**:
+  - FM3 batches Environment commands (`0xE1` Texpage) and multiple sequential primitives within single DMA linked-list nodes.
+  - Gated isolation preserves continuous PSX-SPX FIFO parsing, preventing the solid red polygon flood, stretched texture spikes, and missing geometry columns caused by cross-node word truncation.
 
 ---
 

@@ -20357,6 +20357,7 @@ session_reboot:
                      g_headless && g_video_renderer != 0 ? " (headless)" : "");
     }
     gpu_init();
+    gpu_set_game_id(game_id.c_str());
     /* This session's internal resolution: the title's baseline and the
      * Internal Resolution mod's request from start_mod_session's activation
      * (first boot and rematch alike); the env overrides below still win. */

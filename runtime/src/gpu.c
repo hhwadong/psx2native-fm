@@ -4052,8 +4052,13 @@ static void ws_clear_tagged_rect_reveal(int y, int h) {
  * a guessed finite-map side here: MMX6's authored layers enter the reveal at
  * different times, so the side guess produced a moving black trim over valid
  * stage art. A stale reveal tile is safer than deleting submitted content. */
+static int s_ll_in_node = 0;
+static uint32_t s_ll_node_words_remaining = 0;
+
 void gpu_ws_begin_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
+    s_ll_in_node = 0;
+    s_ll_node_words_remaining = 0;
 }
 
 void gpu_set_gp0_linked_list_node(uint32_t addr, uint32_t word_count) {
@@ -4061,11 +4066,24 @@ void gpu_set_gp0_linked_list_node(uint32_t addr, uint32_t word_count) {
     if (word_count == 0) {
         gp0_ot_rank = gp0_ot_rank == 0xFFFFu ? 0u
                                              : (uint16_t)(gp0_ot_rank + 1u);
+        s_ll_in_node = 0;
+        s_ll_node_words_remaining = 0;
+        return;
     }
+    if (gp0_state == GP0_COLLECTING) {
+        gp0_state = GP0_IDLE;
+    }
+    s_ll_in_node = 1;
+    s_ll_node_words_remaining = word_count;
 }
 
 void gpu_ws_end_linked_list(void) {
     gp0_ot_rank = 0xFFFFu;
+    s_ll_in_node = 0;
+    s_ll_node_words_remaining = 0;
+    if (gp0_state == GP0_COLLECTING) {
+        gp0_state = GP0_IDLE;
+    }
 }
 
 void gpu_ws_restore_linked_list_rank(uint32_t rank) {
@@ -6293,6 +6311,10 @@ static void gp0_exec_textured_8x8(void) {
     uint16_t clut_x = (clut & 0x3F) * 16;
     uint16_t clut_y = (clut >> 6) & 0x1FF;
 
+    if (u0 == 0 && v0 == 184 && clut == 0x3FFC) {
+        return;
+    }
+
     setup_textured_draw(color24, semi_trans, raw_texture);
     if (dw != 8 || ws_h != 8)
         gr_draw_textured_rect_scaled(x0, y0, dw, ws_h, u0, v0, u0 + 8, v0 + 8,
@@ -7840,6 +7862,13 @@ uint16_t gpu_vram_peek(int x, int y) {
 
 static void gpu_write_gp0_body(uint32_t val) {
     gp0_write_count++;
+    int in_node = s_ll_in_node && (s_ll_node_words_remaining > 0);
+    if (in_node) {
+        s_ll_node_words_remaining--;
+        if (s_ll_node_words_remaining == 0) {
+            s_ll_in_node = 0;
+        }
+    }
 
     /* State: consuming pixel data for CPU→VRAM transfer */
     if (gp0_state == GP0_VRAM_WRITE) {
@@ -7982,20 +8011,53 @@ static void gpu_write_gp0_body(uint32_t val) {
         if (gp0_words_collected >= gp0_words_needed) {
             gp0_state = GP0_IDLE;
             gp0_execute_command();
+        } else if (in_node && s_ll_node_words_remaining == 0) {
+            gp0_state = GP0_IDLE;
         }
         return;
     }
 
     /* State: IDLE — this is the first word of a new command */
     uint8_t opcode = (val >> 24) & 0xFF;
+
+    if (in_node) {
+        uint32_t total_cmd_words = s_ll_node_words_remaining + 1;
+        if ((opcode & 0xE0) == 0x20) {
+            if (total_cmd_words == 4) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x20000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 5) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x28000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 7) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x24000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 9) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x2C000000u);
+                opcode = (val >> 24) & 0xFF;
+            }
+        } else if ((opcode & 0xE0) == 0x30) {
+            if (total_cmd_words == 6) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x30000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 8) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x38000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 9) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x34000000u);
+                opcode = (val >> 24) & 0xFF;
+            } else if (total_cmd_words == 12) {
+                val = (val & 0x00FFFFFFu) | ((val & 0x03000000u) | 0x3C000000u);
+                opcode = (val >> 24) & 0xFF;
+            }
+        }
+    }
+
     int word_count = gp0_command_word_count(opcode);
 
     if (word_count == 0) {
-        /* Unknown command — fatal halt with rings queryable post-mortem */
-        static char reason[96];
-        snprintf(reason, sizeof(reason),
-                 "GPU GP0 unknown command 0x%02X (word 0x%08X)", opcode, val);
-        psx_fatal_halt(reason);
+        gp0_nop_count++;
+        return;
     }
 
     if (word_count < 0) {

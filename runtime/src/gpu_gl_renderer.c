@@ -5270,7 +5270,18 @@ static void gpu_copy_rect(int sx,int sy,int dx,int dy,int w,int h) {
 }
 
 /* ---- backend vtable wrappers ------------------------------------------- */
-static void glb_init(uint16_t *vram) { s_vram = vram; sw_renderer_init(vram); }
+static void glb_init(uint16_t *vram) {
+    s_vram = vram;
+    sw_renderer_init(vram);
+    if (s_raw_tex && vram) {
+        glBindTexture(GL_TEXTURE_2D, s_raw_tex);
+        glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, VRAM_W);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, VRAM_W, VRAM_H,
+                        PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, vram);
+        glPixelStorei(PSXGL_UNPACK_ROW_LENGTH, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
 
 /* Under GL the internal-resolution scale lives in the hr FBO; the CPU-side
  * (software mirror, readbacks, screenshots) stays native, so the reported
@@ -6074,6 +6085,18 @@ static int alloc_hr_targets(int S) {
     int ok = glGetError() == GL_NO_ERROR;
     if (ok) ok = make_fbo(&s_hr_fbo, s_hr_tex, s_hr_rb);
     if (ok) ok = make_fbo(&s_scratch_fbo, s_scratch_tex, 0);
+    if (ok) {
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_hr_fbo);
+        glViewport(0, 0, hw, hh);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClearStencil(0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, s_scratch_fbo);
+        glViewport(0, 0, s_scratch_w, s_scratch_h);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        p_glBindFramebuffer(PSXGL_FRAMEBUFFER, 0);
+    }
     if (ok) ok = glGetError() == GL_NO_ERROR;
     if (!ok) free_hr_targets();
     s_hr_alloc = ok ? S : 0;
@@ -6164,18 +6187,17 @@ static int init_gpu_raster(void) {
 
     s_up_tex      = make_tex(GL_RGBA8, VRAM_W, VRAM_H, GL_RGBA, GL_UNSIGNED_BYTE);
     s_raw_tex     = make_tex(PSXGL_R16UI, VRAM_W, VRAM_H, PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT);
-    /* Force the driver's first texture-upload allocation while the renderer is
-     * initializing. NVIDIA otherwise defers it until the first MDEC frame,
-     * producing a measured ~33 ms glTexSubImage hitch and an audible underrun. */
     {
-        const uint32_t zero_rgba = 0;
-        const uint16_t zero_raw = 0;
-        glBindTexture(GL_TEXTURE_2D, s_up_tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1,
-                        GL_RGBA, GL_UNSIGNED_BYTE, &zero_rgba);
-        glBindTexture(GL_TEXTURE_2D, s_raw_tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1,
-                        PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, &zero_raw);
+        uint32_t *zero_raw = (uint32_t *)calloc((size_t)VRAM_W * VRAM_H, sizeof(uint32_t));
+        if (zero_raw) {
+            glBindTexture(GL_TEXTURE_2D, s_up_tex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, VRAM_W, VRAM_H,
+                            GL_RGBA, GL_UNSIGNED_BYTE, zero_raw);
+            glBindTexture(GL_TEXTURE_2D, s_raw_tex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, VRAM_W, VRAM_H,
+                            PSXGL_RED_INTEGER, GL_UNSIGNED_SHORT, zero_raw);
+            free(zero_raw);
+        }
         glFinish();
     }
 
